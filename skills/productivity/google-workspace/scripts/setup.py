@@ -65,6 +65,29 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
+SERVICE_SCOPES = {
+    "email": SCOPES[0:3],
+    "calendar": [SCOPES[3]],
+    "drive": [SCOPES[4]],
+    "contacts": [SCOPES[5]],
+    "sheets": [SCOPES[6]],
+    "docs": [SCOPES[7]],
+}
+
+
+def _scopes_for_services(services: str) -> list[str]:
+    """Map --services (comma list or 'all') to OAuth scopes, keeping SCOPES order."""
+    names = [n.strip().lower() for n in services.split(",") if n.strip()]
+    if not names or "all" in names:
+        return list(SCOPES)
+    unknown = [n for n in names if n not in SERVICE_SCOPES]
+    if unknown:
+        print(f"ERROR: Unknown service(s): {', '.join(unknown)}. Choose from: all, {', '.join(SERVICE_SCOPES)}")
+        sys.exit(2)
+    wanted = {scope for n in names for scope in SERVICE_SCOPES[n]}
+    return [scope for scope in SCOPES if scope in wanted]
+
+
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
@@ -298,7 +321,7 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
     return params["code"][0], state
 
 
-def get_auth_url():
+def get_auth_url(services: str = "all", output_format: str = "text"):
     """Print the OAuth authorization URL. User visits this in a browser."""
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
@@ -309,7 +332,7 @@ def get_auth_url():
 
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
+        scopes=_scopes_for_services(services),
         redirect_uri=REDIRECT_URI,
         autogenerate_code_verifier=True,
     )
@@ -320,8 +343,15 @@ def get_auth_url():
         **extra,
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier)
-    # Print just the URL so the agent can extract it cleanly
-    print(auth_url)
+    try:
+        (HERMES_HOME / "google_oauth_last_url.txt").write_text(auth_url + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    if output_format == "json":
+        print(json.dumps({"auth_url": auth_url, "account": ACCOUNT}))
+    else:
+        # Print just the URL so the agent can extract it cleanly
+        print(auth_url)
 
 
 def exchange_auth_code(code: str):
@@ -519,6 +549,8 @@ def main():
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
     group.add_argument("--list-accounts", action="store_true", help="List named accounts that have a token")
+    parser.add_argument("--services", default="all", help="With --auth-url: comma list of email,calendar,drive,contacts,sheets,docs, or all")
+    parser.add_argument("--format", dest="output_format", choices=["text", "json"], default="text", help="Output format for --auth-url")
     _google_account.add_account_argument(parser)
     args = parser.parse_args()
 
@@ -532,7 +564,7 @@ def main():
     elif args.client_secret:
         store_client_secret(args.client_secret)
     elif args.auth_url:
-        get_auth_url()
+        get_auth_url(args.services, args.output_format)
     elif args.auth_code:
         exchange_auth_code(args.auth_code)
     elif args.revoke:
